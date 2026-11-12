@@ -54,6 +54,24 @@ def _normalizar_serial(valor):
     return re.sub(r"[^A-Z0-9]", "", str(valor).upper())
 
 
+def _extrair_tensao(texto_placa):
+    correspondencia = re.search(
+        r"(?<![A-Z0-9])([0-9OIl|]+(?:[.,][0-9OIl|]+)?)\s*V(?![A-Z])",
+        texto_placa,
+        re.IGNORECASE,
+    )
+    if not correspondencia:
+        return "Não localizado"
+
+    valor = correspondencia.group(1).upper().translate(str.maketrans({
+        "O": "0",
+        "I": "1",
+        "L": "1",
+        "|": "1",
+    }))
+    return f"{valor} V"
+
+
 def calcular_confianca_serial(serial, resultados_ocr):
     serial_normalizado = _normalizar_serial(serial)
     if not serial_normalizado or serial_normalizado == "NAOLOCALIZADO":
@@ -86,6 +104,7 @@ def extrair(texto_placa, dicionario_tags, dados_hierarquia, resultados_ocr=None)
         else:
             dados_extraidos[tag] = "Não localizado"
 
+    dados_extraidos["tensao"] = _extrair_tensao(texto_placa)
     if "tag_identificacao" in dicionario_tags:
         dados_extraidos["tag_identificacao"] = _extrair_serial(texto_placa, resultados_ocr)
 

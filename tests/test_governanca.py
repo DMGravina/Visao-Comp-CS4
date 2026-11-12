@@ -61,3 +61,15 @@ def test_nao_aceita_letra_isolada_como_serial():
     dados = extrair("SIEMENS\nS", criar_ddt(), {}, resultados_ocr)
 
     assert dados["tag_identificacao"] == "Não localizado"
+
+
+def test_extrai_tensao_com_formato_numerico_e_corrige_caracteres_ambiguos():
+    dados = extrair("SERIAL C132394 22OV", criar_ddt(), {})
+
+    assert dados["tensao"] == "220 V"
+
+
+def test_nao_extrai_grandezas_sem_unidade_volt():
+    dados = extrair("220 Hz\n2.2 kW", criar_ddt(), {})
+
+    assert dados["tensao"] == "Não localizado"

@@ -13,7 +13,7 @@ Nossa arquitetura divide o fluxo de dados operacionais (dinâmicos) e metadados 
 ### 1. Visão Computacional (O Cadastro Inteligente)
 Diga adeus ao cadastro manual demorado e suscetível a erros. Desenvolvemos um pipeline robusto para ler as placas metálicas dos ativos de fábrica:
 *   **Pré-processamento:** Usamos `OpenCV` (Filtro Bilateral, CLAHE e Threshold Adaptativo) para limpar reflexos de flash, arranhões e sujeira do metal.
-*   **OCR com GPU:** Implementamos o `EasyOCR` (DB para Bounding Boxes e CRNN para leitura) para transcrever a imagem.
+*   **Comparação de OCR:** A rotina de avaliação compara EasyOCR, Tesseract OCR e Gemini multimodal, registrando as caixas detectadas e a acurácia em relação ao gabarito.
 *   **Inteligência de Extração (Regex):** Como placas industriais não seguem um padrão fixo, usamos Expressões Regulares para buscar grandezas (ex: `[Número] + kW` = Potência). Esses dados formam a "identidade" do ativo e são injetados diretamente em nosso banco relacional (`SQLite`).
 
 ### 2. IoT e Telemetria (O Pulso da Máquina)
@@ -56,7 +56,9 @@ Quer rodar o projeto localmente? Siga os passos abaixo:
 ### Pré-requisitos
 *   [Python 3.9+](https://www.python.org/downloads/)
 *   [Git](https://git-scm.com/)
-*   (Opcional, mas recomendado) Suporte a GPU CUDA para acelerar o EasyOCR.
+*   Binário do Tesseract OCR instalado e disponível no `PATH` (por exemplo, `sudo apt install tesseract-ocr` no Ubuntu).
+*   Variável `GEMINI_API_KEY` para habilitar a abordagem multimodal. As imagens serão enviadas à API Gemini do Google; não configure a chave se isso não for permitido para o seu dataset.
+*   (Opcional) Suporte a GPU CUDA para acelerar o EasyOCR.
 
 ### 1. Clonando o Repositório
 ```bash
@@ -81,11 +83,14 @@ pip install -r requirements.txt
 ```
 
 ### 4. Executando o Pipeline
-**Para testar a extração OCR (Visão Computacional):**
-Basta executar o script principal passando o caminho da imagem de teste. O sistema aplicará os filtros, extrairá os dados via Regex e salvará no banco local `forzy_gemeo_digital.db`.
+**Para comparar as três abordagens no lote rotulado:**
 ```bash
-python src/cv_pipeline.py --image_path "data/images/placa_weg_teste.jpg"
+export GEMINI_API_KEY="sua-chave"
+python modelo_visaoc.py
 ```
+O pipeline processa as imagens listadas em `placas/Book.xlsx` e gera `evidencias_ocr/comparativo_acuracia.csv`, `evidencias_ocr/resultados_detalhados.csv` e uma imagem com bounding boxes por abordagem e amostra em `evidencias_ocr/marcacoes/`. A acurácia é de correspondência exata da TAG normalizada (ignorando pontuação e caixa), e erros de execução são identificados no comparativo.
+
+É possível passar `--images-dir`, `--ground-truth`, `--output-dir` e `--expected-images` para selecionar outro lote. O repositório contém atualmente 20 imagens rotuladas; para comprovar o resultado em 30, adicione mais 10 imagens e suas TAGs ao gabarito. O script sinaliza o lote incompleto e calcula a métrica somente sobre as amostras rotuladas disponíveis.
 
 *(O front-end e os serviços de telemetria podem requerer a subida de containers Docker para o TimescaleDB e Node-RED, documentados separadamente no diretório `/infra`)*.
 
