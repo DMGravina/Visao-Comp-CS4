@@ -7,13 +7,10 @@ import cv2
 import easyocr
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
 
-from Database.init import iniciar_DB
-from Database.saving_db import salvar_no_banco
-from Governanca.fila_revisao import criar_tabela_revisao, salvar_para_revisao
-from Governanca.revisao import decidir_validacao
 from tags.dicionario import criar_ddt
-from Text_function.extract import extrair, validar_metadados
+from Text_function.extract import extrair
 from Text_function.ocr_methods import executar_gemini, executar_tesseract
 from Text_function.tratar import detectar_texto, tratar_imagens
 
@@ -73,12 +70,33 @@ def salvar_evidencia(caminho, imagem, abordagem, resultados, cv2_module):
         raise OSError(f"Não foi possível salvar a evidência em '{caminho}'.")
 
 
+def carregar_gabarito(arquivo_gabarito):
+    caminho = Path(arquivo_gabarito)
+    if caminho.suffix.lower() == ".csv":
+        df = pd.read_csv(
+            caminho,
+            sep=None,
+            engine="python",
+            encoding="utf-8-sig",
+            dtype=str,
+        )
+        df = df.loc[
+            :,
+            ~df.columns.astype(str).str.match(r"^(Unnamed:|$)"),
+        ]
+        return df.dropna(axis=1, how="all")
+    if caminho.suffix.lower() in {".xlsx", ".xls"}:
+        return pd.read_excel(
+            caminho,
+            sheet_name="Planilha1",
+            dtype={"nome_arquivo": str, "tag": str},
+        )
+    raise ValueError("O gabarito deve estar em formato CSV ou Excel (.xlsx).")
+
+
 def executar_lote(pasta_imagens, arquivo_gabarito, pasta_saida, quantidade_esperada):
-    df_gabarito = pd.read_excel(
-        arquivo_gabarito,
-        sheet_name="Planilha1",
-        dtype={"nome_arquivo": str, "tag": str},
-    )
+    load_dotenv()
+    df_gabarito = carregar_gabarito(arquivo_gabarito)
     colunas_obrigatorias = {"nome_arquivo", "tag"}
     if not colunas_obrigatorias.issubset(df_gabarito.columns):
         raise ValueError(
@@ -122,13 +140,6 @@ def executar_lote(pasta_imagens, arquivo_gabarito, pasta_saida, quantidade_esper
     pasta_marcacoes = pasta_saida / "marcacoes"
     pasta_marcacoes.mkdir(parents=True, exist_ok=True)
     dict_tags = criar_ddt()
-    hierarquia_sessao = {
-        "planta": "Fábrica São Paulo - Unidade 1",
-        "area": "Linha de Envasamento 02",
-        "ativo_pai": "Conjunto Motobomba MB-04",
-        "sub_ativo": "Motor Principal",
-    }
-
     leitor_easyocr = easyocr.Reader(["pt", "en"], gpu=False)
     try:
         import pytesseract
@@ -147,10 +158,7 @@ def executar_lote(pasta_imagens, arquivo_gabarito, pasta_saida, quantidade_esper
                 f"Detalhe: {erro}"
             )
 
-    iniciar_DB()
-    criar_tabela_revisao()
     registros_avaliacao = []
-    registros_aprovados = []
 
     for caminho in arquivos:
         imagem_original = None
@@ -221,34 +229,6 @@ def executar_lote(pasta_imagens, arquivo_gabarito, pasta_saida, quantidade_esper
                     cv2,
                 )
 
-            if abordagem == "EasyOCR" and not erro:
-                metadados = extrair(texto, dict_tags, hierarquia_sessao, deteccoes)
-                metadados["texto_bruto"] = texto
-                metadados["arquivo_origem"] = str(caminho)
-                aprovado_ocr, motivos_ocr, confianca_media = validar_metadados(
-                    metadados, deteccoes
-                )
-                status_gov, motivos_gov, aprovado_gov = decidir_validacao(
-                    metadados,
-                    confianca_media=confianca_media,
-                )
-                motivos = list(dict.fromkeys(motivos_ocr + motivos_gov))
-                aprovado = aprovado_ocr and aprovado_gov
-                metadados["status_validacao"] = "APROVADO" if aprovado else "PENDENTE"
-                metadados["motivos_validacao"] = (
-                    "; ".join(motivos) if motivos else "Nenhum"
-                )
-                metadados["confianca_ocr"] = confianca_media
-                metadados["governanca"] = status_gov
-                if aprovado:
-                    registros_aprovados.append(metadados)
-                else:
-                    salvar_para_revisao(
-                        metadados,
-                        motivos,
-                        db_path="forzy_gemeo_digital.db",
-                    )
-
     df_avaliacao = pd.DataFrame(registros_avaliacao)
     df_resumo = pd.DataFrame([
         {
@@ -293,7 +273,6 @@ def executar_lote(pasta_imagens, arquivo_gabarito, pasta_saida, quantidade_esper
     )
     print("\n--- Comparativo de OCR ---")
     print(df_resumo.to_string(index=False))
-    salvar_no_banco(pd.DataFrame(registros_aprovados))
 
 
 def main():
@@ -301,7 +280,7 @@ def main():
         description="Compara EasyOCR, Tesseract e Gemini em imagens industriais."
     )
     parser.add_argument("--images-dir", default="./placas")
-    parser.add_argument("--ground-truth", default="./placas/Book.xlsx")
+    parser.add_argument("--ground-truth", default="./placas/Book.csv")
     parser.add_argument("--output-dir", default="./evidencias_ocr")
     parser.add_argument("--expected-images", type=int, default=QUANTIDADE_ESPERADA)
     argumentos = parser.parse_args()

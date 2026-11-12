@@ -56,9 +56,20 @@ Quer rodar o projeto localmente? Siga os passos abaixo:
 ### Pré-requisitos
 *   [Python 3.9+](https://www.python.org/downloads/)
 *   [Git](https://git-scm.com/)
-*   Binário do Tesseract OCR instalado e disponível no `PATH` (por exemplo, `sudo apt install tesseract-ocr` no Ubuntu).
-*   Variável `GEMINI_API_KEY` para habilitar a abordagem multimodal. As imagens serão enviadas à API Gemini do Google; não configure a chave se isso não for permitido para o seu dataset.
+*   Binário do Tesseract OCR instalado e disponível no `PATH`.
+*   Chave própria da API Gemini para habilitar a abordagem multimodal. As imagens serão enviadas à API Gemini do Google; não configure a chave se isso não for permitido para o seu dataset.
 *   (Opcional) Suporte a GPU CUDA para acelerar o EasyOCR.
+
+#### Instalação do Tesseract
+
+No Ubuntu/Debian:
+```bash
+sudo apt update
+sudo apt install -y tesseract-ocr
+tesseract --version
+```
+
+No Windows, instale o Tesseract OCR para Windows e adicione a pasta de instalação ao `PATH`; depois, confirme com `tesseract --version` em um novo terminal.
 
 ### 1. Clonando o Repositório
 ```bash
@@ -79,18 +90,29 @@ source venv/bin/activate
 ### 3. Instalando as Dependências
 Instale as bibliotecas necessárias de Visão Computacional, OCR, Pandas, etc.
 ```bash
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-### 4. Executando o Pipeline
+### 4. Configurando a chave Gemini
+Copie o modelo local e edite `.env` para inserir sua própria chave:
+```bash
+cp .env.example .env
+```
+No Windows PowerShell:
+```powershell
+Copy-Item .env.example .env
+```
+Abra `.env` e preencha `GEMINI_API_KEY=sua-chave`. O `.env` é ignorado pelo Git; nunca compartilhe nem versione esse arquivo ou a chave. O script carrega a chave localmente ao iniciar. Sem a chave, EasyOCR e Tesseract ainda podem ser avaliados, mas o comparativo identificará o Gemini como erro de execução.
+
+### 5. Executando o Pipeline
 **Para comparar as três abordagens no lote rotulado:**
 ```bash
-export GEMINI_API_KEY="sua-chave"
 python modelo_visaoc.py
 ```
-O pipeline processa as imagens listadas em `placas/Book.xlsx` e gera `evidencias_ocr/comparativo_acuracia.csv`, `evidencias_ocr/resultados_detalhados.csv` e uma imagem com bounding boxes por abordagem e amostra em `evidencias_ocr/marcacoes/`. A acurácia é de correspondência exata da TAG normalizada (ignorando pontuação e caixa), e erros de execução são identificados no comparativo.
+O pipeline processa as imagens listadas em `placas/Book.csv` e gera `evidencias_ocr/comparativo_acuracia.csv`, `evidencias_ocr/resultados_detalhados.csv` e uma imagem com bounding boxes por abordagem e amostra em `evidencias_ocr/marcacoes/`. A acurácia é de correspondência exata da TAG normalizada (ignorando pontuação e caixa), e erros de execução são identificados no comparativo. Esta execução de benchmark gera apenas evidências e não grava dados no banco relacional.
 
-É possível passar `--images-dir`, `--ground-truth`, `--output-dir` e `--expected-images` para selecionar outro lote. O repositório contém atualmente 20 imagens rotuladas; para comprovar o resultado em 30, adicione mais 10 imagens e suas TAGs ao gabarito. O script sinaliza o lote incompleto e calcula a métrica somente sobre as amostras rotuladas disponíveis.
+É possível passar `--images-dir`, `--ground-truth`, `--output-dir` e `--expected-images` para selecionar outro lote. O dataset atual contém 30 imagens rotuladas no CSV. O script sinaliza se a quantidade de imagens rotuladas for inferior à esperada.
 
 *(O front-end e os serviços de telemetria podem requerer a subida de containers Docker para o TimescaleDB e Node-RED, documentados separadamente no diretório `/infra`)*.
 

@@ -7,9 +7,10 @@ def tratar_imagens(caminho_imagem):
     if img is None:
         raise FileNotFoundError(f"ERRO: A imagem '{caminho_imagem}' não foi encontrada.")
     altura, largura = img.shape[:2]
+    escala = min(2.0, 1800 / max(altura, largura))
     img_redimensionada = cv2.resize(
         img,
-        (largura * 2, altura * 2),
+        (round(largura * escala), round(altura * escala)),
         interpolation=cv2.INTER_CUBIC,
     )
     cinza = cv2.cvtColor(img_redimensionada, cv2.COLOR_BGR2GRAY)
@@ -35,16 +36,16 @@ def detectar_texto(caminho_imagem, reader, imagem_processada=None):  # Aceita im
         imagem_processada, _ = tratar_imagens(caminho_imagem)  # Garante o pré-processamento antes do OCR.
 
     imagem_original = cv2.imread(caminho_imagem)
-    leituras = [(reader.readtext(imagem_processada, detail=1), 0.5)]
-    if imagem_original is not None:
-        leituras.append((reader.readtext(imagem_original, detail=1), 1.0))
+    leituras = [reader.readtext(imagem_processada, detail=1)]
+    escala_x = imagem_processada.shape[1] / imagem_original.shape[1]
+    escala_y = imagem_processada.shape[0] / imagem_original.shape[0]
 
     melhores_resultados = {}
-    for leitura, escala in leituras:
+    for leitura in leituras:
         for resultado in leitura:
             caixa, texto, confianca = resultado
             caixa_original = [
-                [coordenada * escala for coordenada in ponto]
+                [ponto[0] / escala_x, ponto[1] / escala_y]
                 for ponto in caixa
             ]
             normalizado = (caixa_original, texto, confianca)
