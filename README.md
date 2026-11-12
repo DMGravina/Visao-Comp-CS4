@@ -2,29 +2,29 @@
 
 Olá! Bem-vindo ao repositório oficial do projeto **Forzy Challenge**, desenvolvido pelo **Grupo Dota** em parceria com a **Forzy / Promon Engenharia** e a **FIAP**.
 
-Nós construímos uma solução de **Gêmeo Digital (Digital Twin)** focada em monitoramento, visibilidade operacional e manutenção preditiva. Embora nossa Prova de Conceito (PoC) utilize motores elétricos (como o WEG W22), o coração desta plataforma é **generalista**. Ela foi desenhada para se adaptar à topologia de qualquer planta industrial (bombas, compressores, válvulas, etc.), permitindo o rastreio do efeito cascata de falhas entre equipamentos interconectados.
+Nós construímos uma solução de **Gêmeo Digital** focada em monitoramento, visibilidade operacional e manutenção preditiva. Embora nossa Prova de Conceito utilize motores elétricos, o coração desta plataforma é **generalista**. Ela foi desenhada para se adaptar à topologia de qualquer planta industrial (bombas, compressores, válvulas, etc.), permitindo o rastreio do efeito cascata de falhas entre equipamentos interconectados.
 
 ---
 
-## Como Raciocinamos a Solução (Os 4 Pilares)
+## Como Raciocinamos a Solução
 
 Nossa arquitetura divide o fluxo de dados operacionais (dinâmicos) e metadados (estáticos) em quatro grandes pilares tecnológicos:
 
-### 1. Visão Computacional (O Cadastro Inteligente)
+### 1. Visão Computacional
 Diga adeus ao cadastro manual demorado e suscetível a erros. Desenvolvemos um pipeline robusto para ler as placas metálicas dos ativos de fábrica:
 *   **Pré-processamento:** Usamos `OpenCV` (Filtro Bilateral, CLAHE e Threshold Adaptativo) para limpar reflexos de flash, arranhões e sujeira do metal.
 *   **Comparação de OCR:** A rotina de avaliação compara EasyOCR, Tesseract OCR e Gemini multimodal, registrando as caixas detectadas e a acurácia em relação ao gabarito.
 *   **Inteligência de Extração (Regex):** Como placas industriais não seguem um padrão fixo, usamos Expressões Regulares para buscar grandezas (ex: `[Número] + kW` = Potência). Esses dados formam a "identidade" do ativo e são injetados diretamente em nosso banco relacional (`SQLite`).
 
-### 2. IoT e Telemetria (O Pulso da Máquina)
+### 2. IoT e Telemetria
 *   Coletamos os sinais vitais reais do equipamento (vibração, temperatura, corrente) via protocolo **OPC-UA**.
 *   Processamos esses sinais no **Node-RED** e os armazenamos de forma otimizada em um banco de dados temporal (**TimescaleDB**).
 *   A visualização em tempo real acontece através de dashboards integrados no **Grafana**.
 
-### 3. Machine Learning e Inteligência Preditiva (O Cérebro)
+### 3. Machine Learning e Inteligência Preditiva
 Não mostramos apenas o que está quebrado; prevemos quando vai quebrar. Consumindo os dados do TimescaleDB, nossos modelos estabelecem o *baseline* (comportamento normal) do ativo e disparam alertas caso detectem anomalias que fujam desse padrão, recomendando o momento exato para a manutenção.
 
-### 4. IA Generativa e Troubleshooting (O Especialista RAG)
+### 4. IA Generativa e Troubleshooting
 Integramos um assistente multimodal baseado em arquitetura **RAG (Retrieval-Augmented Generation)**. Ele cruza os alertas do sistema com os manuais técnicos em PDF (Datasheets) do equipamento, oferecendo um chat conversacional para ajudar o técnico no chão de fábrica a resolver o problema rapidamente.
 
 ---
@@ -40,7 +40,7 @@ Para garantir que a plataforma sirva para qualquer indústria, modelamos a naveg
 
 ---
 
-## Governança de IA (Gov.IA) e Segurança
+## Governança de IA e Segurança
 
 A autonomia da máquina tem limites. Implementamos um rigoroso protocolo de **Governança de IA**:
 *   **Metric Contracts (Limiares):** Contratos matemáticos que definem o que é um comportamento anômalo seguro para a IA atuar sozinha (Informação Explícita).
