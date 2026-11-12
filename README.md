@@ -1,37 +1,35 @@
 # Forzy Digital Twin: Plataforma Integrada de Gestão de Ativos Industriais
 
-Olá! Bem-vindo ao repositório oficial do projeto **Forzy Challenge**, desenvolvido pelo **Grupo Dota** em parceria com a **Forzy / Promon Engenharia** e a **FIAP**.
+Olá! Este repositório contém a prova de conceito do **Forzy Challenge**, desenvolvido pelo **Grupo Dota** em parceria com a **Forzy / Promon Engenharia** e a **FIAP**. A entrega implementada concentra-se na ingestão de dados estáticos de placas industriais por OCR, sua revisão humana e o cadastro aprovado em SQLite. Telemetria, manutenção preditiva e assistência RAG permanecem como arquitetura proposta, não como funcionalidades executáveis neste repositório.
 
-Nós construímos uma solução de **Gêmeo Digital** focada em monitoramento, visibilidade operacional e manutenção preditiva. Embora nossa Prova de Conceito utilize motores elétricos, o coração desta plataforma é **generalista**. Ela foi desenhada para se adaptar à topologia de qualquer planta industrial (bombas, compressores, válvulas, etc.), permitindo o rastreio do efeito cascata de falhas entre equipamentos interconectados.
+O objetivo maior é uma solução de **Gêmeo Digital** focada em monitoramento, visibilidade operacional e manutenção preditiva. Embora a prova de conceito utilize motores elétricos, a arquitetura pretendida é generalista e pode se adaptar à topologia de outras plantas industriais.
 
 ---
 
 ## Como Raciocinamos a Solução
 
-Nossa arquitetura divide o fluxo de dados operacionais (dinâmicos) e metadados (estáticos) em quatro grandes pilares tecnológicos:
+O protótipo implementa o fluxo de ingestão de metadados estáticos. Os demais pilares abaixo descrevem a arquitetura planejada:
 
 ### 1. Visão Computacional
 Diga adeus ao cadastro manual demorado e suscetível a erros. Desenvolvemos um pipeline robusto para ler as placas metálicas dos ativos de fábrica:
 *   **Pré-processamento:** Usamos `OpenCV` (Filtro Bilateral, CLAHE e Threshold Adaptativo) para limpar reflexos de flash, arranhões e sujeira do metal.
 *   **Comparação de OCR:** A rotina de avaliação compara EasyOCR, Tesseract OCR e Gemini multimodal, registrando as caixas detectadas e a acurácia em relação ao gabarito.
-*   **Inteligência de Extração (Regex):** Como placas industriais não seguem um padrão fixo, usamos Expressões Regulares para buscar grandezas (ex: `[Número] + kW` = Potência). Esses dados formam a "identidade" do ativo e são injetados diretamente em nosso banco relacional (`SQLite`).
+*   **Inteligência de Extração (Regex):** Expressões Regulares identificam campos disponíveis no texto reconhecido. No modo de cadastro, os resultados seguem para revisão humana e só são gravados no SQLite após aprovação.
 
-### 2. IoT e Telemetria
-*   Coletamos os sinais vitais reais do equipamento (vibração, temperatura, corrente) via protocolo **OPC-UA**.
-*   Processamos esses sinais no **Node-RED** e os armazenamos de forma otimizada em um banco de dados temporal (**TimescaleDB**).
-*   A visualização em tempo real acontece através de dashboards integrados no **Grafana**.
+### 2. IoT e Telemetria (arquitetura proposta)
+OPC-UA, Node-RED, TimescaleDB e Grafana fazem parte do desenho futuro. A coleta, o armazenamento temporal e os dashboards ainda não estão implementados neste repositório.
 
-### 3. Machine Learning e Inteligência Preditiva
-Não mostramos apenas o que está quebrado; prevemos quando vai quebrar. Consumindo os dados do TimescaleDB, nossos modelos estabelecem o *baseline* (comportamento normal) do ativo e disparam alertas caso detectem anomalias que fujam desse padrão, recomendando o momento exato para a manutenção.
+### 3. Machine Learning e Inteligência Preditiva (arquitetura proposta)
+Os modelos de anomalia, o *baseline* e os alertas de manutenção dependem da futura integração com os dados de telemetria e ainda não fazem parte do código entregue.
 
-### 4. IA Generativa e Troubleshooting
-Integramos um assistente multimodal baseado em arquitetura **RAG (Retrieval-Augmented Generation)**. Ele cruza os alertas do sistema com os manuais técnicos em PDF (Datasheets) do equipamento, oferecendo um chat conversacional para ajudar o técnico no chão de fábrica a resolver o problema rapidamente.
+### 4. IA Generativa e Troubleshooting (arquitetura proposta)
+O assistente **RAG** para consultar manuais e alertas permanece como etapa futura. A integração Gemini disponível neste código é usada para OCR multimodal de placas, não para troubleshooting conversacional.
 
 ---
 
 ## A Estrutura em "Escada"
 
-Para garantir que a plataforma sirva para qualquer indústria, modelamos a navegação de forma hierárquica e interconectada:
+Para a plataforma futura, a navegação está planejada de forma hierárquica e interconectada:
 1. **Planta/Fábrica** (Visão Macro)
 2. **Área/Setor** 
 3. **Ativo Principal** (ex: Linha de Bombeamento)
@@ -42,10 +40,12 @@ Para garantir que a plataforma sirva para qualquer indústria, modelamos a naveg
 
 ## Governança de IA e Segurança
 
-A autonomia da máquina tem limites. Implementamos um rigoroso protocolo de **Governança de IA**:
-*   **Metric Contracts (Limiares):** Contratos matemáticos que definem o que é um comportamento anômalo seguro para a IA atuar sozinha (Informação Explícita).
-*   **Protocolo de Handoff Humano:** Critérios claros para quando o modelo deve passar a decisão para a intuição e experiência do engenheiro (Informação Tácita).
-*   **Human-in-the-loop (A "Falha de Ouro"):** Descobrimos nos testes que o OCR pode ler, por proximidade geométrica, "1 HP 60 Hz" como "1 Hz". Por ser um ambiente crítico, a extração visual preenche o formulário, mas **exige validação humana** antes do cadastro definitivo (Circuit Breaker).
+A autonomia da máquina tem limites. No fluxo de cadastro implementado:
+*   Os resultados do OCR são encaminhados à fila de revisão, mesmo quando as regras automáticas não apontam inconsistências.
+*   A aprovação humana grava o ativo no SQLite; a rejeição mantém o registro fora da tabela de ativos.
+*   O benchmark mede correspondência exata e similaridade das TAGs, mas similaridade não aprova nem corrige automaticamente um cadastro.
+
+Os contratos de métrica para telemetria e o handoff associado a modelos preditivos permanecem fora do escopo de código atual.
 
 ---
 
@@ -112,11 +112,21 @@ python modelo_visaoc.py
 ```
 O pipeline processa as imagens listadas em `placas/Book.csv` e gera `evidencias_ocr/comparativo_acuracia.csv`, `evidencias_ocr/resultados_detalhados.csv` e uma imagem com bounding boxes por abordagem e amostra em `evidencias_ocr/marcacoes/`. A acurácia é de correspondência exata da TAG normalizada (ignorando pontuação e caixa), e erros de execução são identificados no comparativo. Esta execução de benchmark gera apenas evidências e não grava dados no banco relacional.
 
-É possível passar `--images-dir`, `--ground-truth`, `--output-dir` e `--expected-images` para selecionar outro lote. O dataset atual contém 30 imagens rotuladas no CSV. O script sinaliza se a quantidade de imagens rotuladas for inferior à esperada.
+O relatório de benchmark também inclui distância de edição e similaridade percentual. Esses indicadores são informativos: somente a correspondência exata conta como acerto. Para executar em lotes menores (por exemplo, para limitar o uso de memória), use `--batch-offset` e `--batch-size` e escolha um `--output-dir` diferente para cada lote. Também é possível passar `--images-dir`, `--ground-truth`, `--output-dir` e `--expected-images`. O dataset atual contém 30 imagens rotuladas no CSV.
 
-*(O front-end e os serviços de telemetria podem requerer a subida de containers Docker para o TimescaleDB e Node-RED, documentados separadamente no diretório `/infra`)*.
+**Para enviar imagens ao fluxo de cadastro e revisão humana:**
+```bash
+python modelo_visaoc.py --mode ingest --images placas/Placa_Ind10.jpg --ocr-method "EasyOCR"
+```
+
+O modo `ingest` aceita uma ou mais imagens e os motores `EasyOCR`, `Tesseract` ou `Gemini API`. As imagens são encaminhadas à fila SQLite como pendentes; não há gravação automática de ativos. Para revisar os dados apresentados e aprovar ou rejeitar cada registro:
+```bash
+python modelo_visaoc.py --mode review
+```
+
+Use `--db-path caminho/para/banco.db` em ambos os modos para selecionar outro banco. A aprovação grava o registro na tabela de ativos e atualiza o status da revisão na mesma transação. O benchmark completo com Gemini exige uma chave válida configurada localmente e conectividade com a API; essa execução não é feita automaticamente.
 
 ---
 
 ## Equipe (Grupo Dota)
-Nós nos orgulhamos do desenvolvimento ponta-a-ponta desta aplicação, evoluindo a Prova de Conceito e aplicando os preceitos de Governança para entregar uma solução escalável, confiável e inovadora para a Promon Engenharia.
+O Grupo Dota desenvolveu esta prova de conceito em parceria com a Forzy / Promon Engenharia e a FIAP.

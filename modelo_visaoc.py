@@ -1,6 +1,7 @@
 import argparse
 import os
 import re
+import unicodedata
 from pathlib import Path
 
 import cv2
@@ -9,8 +10,16 @@ import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
 
+from Database.init import iniciar_DB
+from Governanca.fila_revisao import (
+    aprovar_revisao,
+    listar_pendencias,
+    rejeitar_revisao,
+    salvar_para_revisao,
+)
+from Governanca.revisao import decidir_validacao
 from tags.dicionario import criar_ddt
-from Text_function.extract import extrair
+from Text_function.extract import calcular_confianca_serial, extrair
 from Text_function.ocr_methods import executar_gemini, executar_tesseract
 from Text_function.tratar import detectar_texto, tratar_imagens
 
@@ -22,7 +31,38 @@ QUANTIDADE_ESPERADA = 30
 def normalizar_serie(valor):
     if pd.isna(valor):
         return ""
-    return re.sub(r"[^A-Z0-9]", "", str(valor).upper())
+    sem_acentos = unicodedata.normalize("NFKD", str(valor))
+    texto_ascii = sem_acentos.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"[^A-Z0-9]", "", texto_ascii.upper())
+
+
+def distancia_edicao(primeira, segunda):
+    if len(primeira) < len(segunda):
+        primeira, segunda = segunda, primeira
+    linha_anterior = list(range(len(segunda) + 1))
+    for indice, caractere in enumerate(primeira, start=1):
+        linha_atual = [indice]
+        for coluna, outro_caractere in enumerate(segunda, start=1):
+            custo = 0 if caractere == outro_caractere else 1
+            linha_atual.append(min(
+                linha_atual[coluna - 1] + 1,
+                linha_anterior[coluna] + 1,
+                linha_anterior[coluna - 1] + custo,
+            ))
+        linha_anterior = linha_atual
+    return linha_anterior[-1]
+
+
+def calcular_similaridade(primeira, segunda):
+    primeira_normalizada = normalizar_serie(primeira)
+    segunda_normalizada = normalizar_serie(segunda)
+    if "NAOLOCALIZADO" in (primeira_normalizada, segunda_normalizada):
+        return 0.0
+    maior_comprimento = max(len(primeira_normalizada), len(segunda_normalizada))
+    if maior_comprimento == 0:
+        return 0.0
+    distancia = distancia_edicao(primeira_normalizada, segunda_normalizada)
+    return round(100 * (1 - distancia / maior_comprimento), 2)
 
 
 def salvar_evidencia(caminho, imagem, abordagem, resultados, cv2_module):
@@ -94,7 +134,14 @@ def carregar_gabarito(arquivo_gabarito):
     raise ValueError("O gabarito deve estar em formato CSV ou Excel (.xlsx).")
 
 
-def executar_lote(pasta_imagens, arquivo_gabarito, pasta_saida, quantidade_esperada):
+def executar_lote(
+    pasta_imagens,
+    arquivo_gabarito,
+    pasta_saida,
+    quantidade_esperada,
+    deslocamento_lote=0,
+    tamanho_lote=None,
+):
     load_dotenv()
     df_gabarito = carregar_gabarito(arquivo_gabarito)
     colunas_obrigatorias = {"nome_arquivo", "tag"}
@@ -123,12 +170,23 @@ def executar_lote(pasta_imagens, arquivo_gabarito, pasta_saida, quantidade_esper
     elif len(df_gabarito) > quantidade_esperada:
         print(
             f"AVISO: o gabarito contém {len(df_gabarito)} imagens; "
-            f"o alvo informado é {quantidade_esperada}. Todas serão processadas."
+            f"o alvo informado é {quantidade_esperada}."
         )
+
+    if deslocamento_lote < 0:
+        raise ValueError("O deslocamento do lote não pode ser negativo.")
+    if tamanho_lote is not None and tamanho_lote <= 0:
+        raise ValueError("O tamanho do lote deve ser maior que zero.")
+    if deslocamento_lote >= len(df_gabarito):
+        raise ValueError("O deslocamento do lote está além do gabarito.")
+
+    df_lote = df_gabarito.iloc[deslocamento_lote:]
+    if tamanho_lote is not None:
+        df_lote = df_lote.iloc[:tamanho_lote]
 
     arquivos = [
         Path(pasta_imagens) / nome_arquivo
-        for nome_arquivo in df_gabarito["nome_arquivo"]
+        for nome_arquivo in df_lote["nome_arquivo"]
     ]
     ausentes = [str(caminho) for caminho in arquivos if not caminho.is_file()]
     if ausentes:
@@ -160,7 +218,7 @@ def executar_lote(pasta_imagens, arquivo_gabarito, pasta_saida, quantidade_esper
 
     registros_avaliacao = []
 
-    for caminho in arquivos:
+    for caminho, (_, linha_gabarito) in zip(arquivos, df_lote.iterrows()):
         imagem_original = None
         imagem_processada = None
         try:
@@ -201,20 +259,32 @@ def executar_lote(pasta_imagens, arquivo_gabarito, pasta_saida, quantidade_esper
                 print(f"Erro em {abordagem} para {caminho.name}: {erro}")
 
             serie = extrair(texto or "", dict_tags, {}, deteccoes)["tag_identificacao"]
-            serie_real = df_gabarito.loc[
-                df_gabarito["nome_arquivo"] == caminho.name,
-                "numero_serie_real",
-            ].iloc[0]
+            serie_real = linha_gabarito["numero_serie_real"]
+            serie_normalizada = normalizar_serie(serie)
+            serie_real_normalizada = normalizar_serie(serie_real)
             acertou = (
-                bool(normalizar_serie(serie))
-                and normalizar_serie(serie) == normalizar_serie(serie_real)
+                serie_normalizada not in ("", "NAOLOCALIZADO")
+                and serie_real_normalizada not in ("", "NAOLOCALIZADO")
+            ) and (
+                serie_normalizada == serie_real_normalizada
             )
+            similaridade = calcular_similaridade(serie, serie_real)
+            distancia = None
+            if (
+                serie_normalizada not in ("", "NAOLOCALIZADO")
+                and serie_real_normalizada not in ("", "NAOLOCALIZADO")
+            ):
+                distancia = distancia_edicao(
+                    serie_normalizada, serie_real_normalizada
+                )
             registros_avaliacao.append({
                 "abordagem": abordagem,
                 "nome_arquivo": caminho.name,
                 "numero_serie_extraido": serie,
                 "numero_serie_real": serie_real,
                 "acertou": acertou,
+                "distancia_edicao": distancia,
+                "similaridade_percentual": similaridade,
                 "status": "ERRO" if erro else "EXECUTADO",
                 "erro": erro,
             })
@@ -234,19 +304,28 @@ def executar_lote(pasta_imagens, arquivo_gabarito, pasta_saida, quantidade_esper
         {
             "abordagem": abordagem,
             "imagens_no_gabarito": len(df_gabarito),
+            "imagens_processadas": len(df_lote),
             "imagens_esperadas": quantidade_esperada,
             "dataset_completo": len(df_gabarito) >= quantidade_esperada,
+            "inicio_lote": deslocamento_lote,
             "acertos": int(
                 df_avaliacao.loc[
                     df_avaliacao["abordagem"] == abordagem, "acertou"
                 ].sum()
+            ),
+            "similaridade_media_percentual": round(
+                df_avaliacao.loc[
+                    df_avaliacao["abordagem"] == abordagem,
+                    "similaridade_percentual",
+                ].mean(),
+                2,
             ),
             "acuracia_percentual": round(
                 100
                 * df_avaliacao.loc[
                     df_avaliacao["abordagem"] == abordagem, "acertou"
                 ].sum()
-                / len(df_gabarito),
+                / len(df_lote),
                 2,
             ),
             "erros_execucao": int(
@@ -275,21 +354,177 @@ def executar_lote(pasta_imagens, arquivo_gabarito, pasta_saida, quantidade_esper
     print(df_resumo.to_string(index=False))
 
 
+def _preparar_ocr(abordagem):
+    if abordagem == "EasyOCR":
+        return easyocr.Reader(["pt", "en"], gpu=False)
+    if abordagem == "Tesseract":
+        try:
+            import pytesseract
+        except ImportError as erro:
+            raise RuntimeError(
+                "Instale a dependência Python 'pytesseract' para usar o Tesseract."
+            ) from erro
+        try:
+            pytesseract.get_tesseract_version()
+        except pytesseract.TesseractNotFoundError as erro:
+            raise RuntimeError(
+                "Instale o binário do Tesseract OCR e adicione-o ao PATH."
+            ) from erro
+    return None
+
+
+def executar_ingestao(imagens, abordagem, db_path="forzy_gemeo_digital.db"):
+    load_dotenv()
+    caminhos = [Path(imagem) for imagem in imagens]
+    if not caminhos:
+        raise ValueError("Informe ao menos uma imagem para cadastrar.")
+    ausentes = [str(caminho) for caminho in caminhos if not caminho.is_file()]
+    if ausentes:
+        raise FileNotFoundError(
+            "Imagens não encontradas: " + ", ".join(ausentes)
+        )
+
+    leitor_ocr = _preparar_ocr(abordagem)
+    iniciar_DB(db_path)
+    registros_criados = []
+    dicionario_tags = criar_ddt()
+
+    for caminho in caminhos:
+        try:
+            imagem_processada, imagem_original = tratar_imagens(str(caminho))
+            if abordagem == "EasyOCR":
+                texto, deteccoes = detectar_texto(
+                    str(caminho), leitor_ocr, imagem_processada
+                )
+            elif abordagem == "Tesseract":
+                altura, largura = imagem_original.shape[:2]
+                texto, deteccoes = executar_tesseract(
+                    imagem_processada, largura, altura
+                )
+            else:
+                texto, deteccoes = executar_gemini(imagem_original, cv2)
+            erro_processamento = ""
+        except Exception as erro:
+            texto = ""
+            deteccoes = []
+            erro_processamento = str(erro)
+            print(f"Erro em {abordagem} para {caminho.name}: {erro_processamento}")
+
+        dados_extraidos = extrair(
+            texto, dicionario_tags, {}, deteccoes
+        )
+        confianca = calcular_confianca_serial(
+            dados_extraidos["tag_identificacao"], deteccoes
+        )
+        _, motivos, _ = decidir_validacao(dados_extraidos, confianca)
+        if erro_processamento:
+            motivos.append(f"Falha no processamento OCR: {erro_processamento}")
+        motivos.append("Aprovação humana obrigatória antes do cadastro")
+        metadados = {
+            **dados_extraidos,
+            "arquivo_origem": str(caminho),
+            "texto_bruto": texto,
+            "confianca_ocr": confianca,
+            "metodo_ocr": abordagem,
+            "status_validacao": "PENDENTE",
+            "motivos_validacao": motivos,
+        }
+        revisao_id = salvar_para_revisao(metadados, motivos, db_path)
+        registros_criados.append(revisao_id)
+        print(
+            f"Imagem '{caminho.name}' enviada para revisão humana "
+            f"(ID {revisao_id}; TAG: {dados_extraidos['tag_identificacao']})."
+        )
+
+    return registros_criados
+
+
+def executar_revisao(db_path="forzy_gemeo_digital.db"):
+    pendencias = listar_pendencias(db_path)
+    if not pendencias:
+        print("Não há registros pendentes de revisão.")
+        return
+
+    for pendencia in pendencias:
+        print(f"\nRevisão {pendencia['id']} — {pendencia['arquivo_origem']}")
+        print(f"TAG detectada: {pendencia['tag_identificacao']}")
+        print(f"Confiança OCR: {pendencia['confianca_ocr']:.2f}")
+        print(f"Motivos: {pendencia['motivos']}")
+        print("Dados extraídos:")
+        print(json.dumps(
+            pendencia["dados_extraidos"],
+            ensure_ascii=False,
+            indent=2,
+        ))
+        decisao = input("[a]provar, [r]ejeitar ou [s]altar? ").strip().lower()
+        if decisao == "a":
+            aprovar_revisao(pendencia["id"], db_path)
+            print("Registro aprovado e salvo no cadastro de ativos.")
+        elif decisao == "r":
+            rejeitar_revisao(pendencia["id"], db_path)
+            print("Registro rejeitado.")
+        elif decisao != "s":
+            print("Opção inválida; o registro permanece pendente.")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Compara EasyOCR, Tesseract e Gemini em imagens industriais."
+        description="Avalia OCR e gerencia o cadastro de placas industriais."
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("benchmark", "ingest", "review"),
+        default="benchmark",
+        help="benchmark compara OCR; ingest encaminha imagens à revisão; "
+        "review processa a fila humana.",
     )
     parser.add_argument("--images-dir", default="./placas")
     parser.add_argument("--ground-truth", default="./placas/Book.csv")
     parser.add_argument("--output-dir", default="./evidencias_ocr")
     parser.add_argument("--expected-images", type=int, default=QUANTIDADE_ESPERADA)
-    argumentos = parser.parse_args()
-    executar_lote(
-        argumentos.images_dir,
-        argumentos.ground_truth,
-        argumentos.output_dir,
-        argumentos.expected_images,
+    parser.add_argument(
+        "--batch-offset",
+        type=int,
+        default=0,
+        help="Índice inicial do lote no gabarito (modo benchmark).",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        help="Quantidade de imagens no lote (modo benchmark).",
+    )
+    parser.add_argument(
+        "--images",
+        nargs="+",
+        help="Caminhos das imagens (obrigatório no modo ingest).",
+    )
+    parser.add_argument(
+        "--ocr-method",
+        choices=ABORDAGENS,
+        default="EasyOCR",
+        help="Motor usado no modo ingest.",
+    )
+    parser.add_argument("--db-path", default="forzy_gemeo_digital.db")
+    argumentos = parser.parse_args()
+    if argumentos.mode == "benchmark":
+        executar_lote(
+            argumentos.images_dir,
+            argumentos.ground_truth,
+            argumentos.output_dir,
+            argumentos.expected_images,
+            argumentos.batch_offset,
+            argumentos.batch_size,
+        )
+    elif argumentos.mode == "ingest":
+        if not argumentos.images:
+            parser.error("--images é obrigatório no modo ingest.")
+        executar_ingestao(
+            argumentos.images,
+            argumentos.ocr_method,
+            argumentos.db_path,
+        )
+    else:
+        executar_revisao(argumentos.db_path)
 
 
 if __name__ == "__main__":
