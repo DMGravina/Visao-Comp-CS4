@@ -163,9 +163,7 @@ def test_benchmark_processa_lote_e_exporta_metricas_aproximadas(
     imagem_original = SimpleNamespace(shape=(100, 200, 3))
     imagem_processada = SimpleNamespace(shape=(50, 100))
     monkeypatch.setattr(
-        modelo_visaoc.easyocr,
-        "Reader",
-        lambda linguas, gpu: object(),
+        modelo_visaoc, "_criar_leitor_easyocr", lambda: object()
     )
     monkeypatch.setitem(
         sys.modules,
@@ -198,6 +196,7 @@ def test_benchmark_processa_lote_e_exporta_metricas_aproximadas(
         "executar_gemini",
         lambda original, cv2_module: ("Serial No. ABC124", []),
     )
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-test-key")
     monkeypatch.setattr(modelo_visaoc, "salvar_evidencia", lambda *args: None)
     saida = tmp_path / "saida"
 
@@ -206,8 +205,9 @@ def test_benchmark_processa_lote_e_exporta_metricas_aproximadas(
         str(gabarito),
         str(saida),
         quantidade_esperada=2,
-        deslocamento_lote=1,
-        tamanho_lote=1,
+        deslocamento_lote=0,
+        tamanho_lote=2,
+        habilitar_gemini=True,
     )
 
     with (saida / "resultados_detalhados.csv").open(
@@ -219,9 +219,99 @@ def test_benchmark_processa_lote_e_exporta_metricas_aproximadas(
     ) as arquivo:
         resumo = list(csv.DictReader(arquivo))
 
-    assert len(resultados) == 3
-    assert {linha["nome_arquivo"] for linha in resultados} == {"b.jpg"}
-    assert {linha["distancia_edicao"] for linha in resultados} == {"0"}
-    assert {linha["similaridade_percentual"] for linha in resultados} == {"100.0"}
-    assert {linha["imagens_processadas"] for linha in resumo} == {"1"}
-    assert {linha["acuracia_percentual"] for linha in resumo} == {"100.0"}
+    assert len(resultados) == 6
+    assert {linha["nome_arquivo"] for linha in resultados} == {"a.jpg", "b.jpg"}
+    assert {
+        linha["distancia_edicao"]
+        for linha in resultados
+        if linha["status"] == "EXECUTADO"
+    } == {"0", "1"}
+    assert {
+        linha["classificacao_resultado"]
+        for linha in resultados
+        if linha["nome_arquivo"] == "a.jpg"
+    } == {"ERRO_OCR"}
+    assert {
+        linha["similaridade_percentual"] for linha in resultados
+    } == {"83.33", "100.0"}
+    assert {linha["imagens_processadas"] for linha in resumo} == {"2"}
+    assert {linha["acertos_exatos"] for linha in resumo} == {"1"}
+    assert {linha["acuracia_percentual"] for linha in resumo} == {"50.0"}
+
+
+def test_benchmark_isola_falha_de_motor_e_nao_envia_gemini_sem_opt_in(
+    tmp_path, monkeypatch
+):
+    imagens = tmp_path / "imagens"
+    imagens.mkdir()
+    (imagens / "placa.jpg").touch()
+    gabarito = tmp_path / "gabarito.csv"
+    gabarito.write_text(
+        "nome_arquivo;tag\nplaca.jpg;ABC123\n", encoding="utf-8"
+    )
+    imagem_original = SimpleNamespace(shape=(100, 200, 3))
+    imagem_processada = SimpleNamespace(shape=(50, 100))
+
+    def falhar_easyocr():
+        raise RuntimeError("dependência indisponível")
+
+    monkeypatch.setattr(modelo_visaoc, "_criar_leitor_easyocr", falhar_easyocr)
+    monkeypatch.setitem(
+        sys.modules,
+        "pytesseract",
+        SimpleNamespace(
+            get_tesseract_version=lambda: "5.3",
+            TesseractNotFoundError=RuntimeError,
+        ),
+    )
+    monkeypatch.setattr(
+        modelo_visaoc,
+        "tratar_imagens",
+        lambda caminho: (imagem_processada, imagem_original),
+    )
+    monkeypatch.setattr(
+        modelo_visaoc,
+        "executar_tesseract",
+        lambda processada, largura, altura: ("Serial No. ABC123", []),
+    )
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        modelo_visaoc,
+        "executar_gemini",
+        lambda *args: _falha_gemini_nao_autorizado(),
+    )
+    monkeypatch.setattr(modelo_visaoc, "salvar_evidencia", lambda *args: None)
+    saida = tmp_path / "saida"
+
+    modelo_visaoc.executar_lote(
+        str(imagens),
+        str(gabarito),
+        str(saida),
+        quantidade_esperada=1,
+    )
+
+    with (saida / "resultados_detalhados.csv").open(
+        encoding="utf-8-sig", newline=""
+    ) as arquivo:
+        resultados = {
+            linha["abordagem"]: linha for linha in csv.DictReader(arquivo)
+        }
+    with (saida / "comparativo_acuracia.csv").open(
+        encoding="utf-8-sig", newline=""
+    ) as arquivo:
+        resumo = {
+            linha["abordagem"]: linha for linha in csv.DictReader(arquivo)
+        }
+
+    assert resultados["EasyOCR"]["status"] == "ERRO_EXECUCAO"
+    assert resultados["EasyOCR"]["classificacao_resultado"] == "ERRO_EXECUCAO"
+    assert resultados["Tesseract"]["status"] == "EXECUTADO"
+    assert resultados["Tesseract"]["classificacao_resultado"] == "ACERTO_EXATO"
+    assert resultados["Gemini API"]["status"] == "NAO_EXECUTADO"
+    assert resumo["EasyOCR"]["erros_execucao"] == "1"
+    assert resumo["Tesseract"]["imagens_processadas"] == "1"
+    assert resumo["Gemini API"]["nao_executadas"] == "1"
+
+
+def _falha_gemini_nao_autorizado():
+    raise AssertionError("Gemini não deve ser chamado sem opt-in")

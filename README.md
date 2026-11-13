@@ -13,7 +13,7 @@ O protótipo implementa o fluxo de ingestão de metadados estáticos. Os demais 
 ### 1. Visão Computacional
 Diga adeus ao cadastro manual demorado e suscetível a erros. Desenvolvemos um pipeline robusto para ler as placas metálicas dos ativos de fábrica:
 *   **Pré-processamento:** Usamos `OpenCV` (Filtro Bilateral, CLAHE e Threshold Adaptativo) para limpar reflexos de flash, arranhões e sujeira do metal.
-*   **Comparação de OCR:** A rotina de avaliação compara EasyOCR, Tesseract OCR e Gemini multimodal, registrando as caixas detectadas e a acurácia em relação ao gabarito.
+*   **Comparação de OCR:** O benchmark avalia EasyOCR, Tesseract OCR e, quando explicitamente habilitado, Gemini multimodal. Registra acertos exatos de TAG normalizada, falhas de execução e resultado por imagem em relação ao gabarito.
 *   **Inteligência de Extração (Regex):** Expressões Regulares identificam campos disponíveis no texto reconhecido. No modo de cadastro, os resultados seguem para revisão humana e só são gravados no SQLite após aprovação.
 
 ### 2. IoT e Telemetria (arquitetura proposta)
@@ -56,8 +56,8 @@ Quer rodar o projeto localmente? Siga os passos abaixo:
 ### Pré-requisitos
 *   [Python 3.9+](https://www.python.org/downloads/)
 *   [Git](https://git-scm.com/)
-*   Binário do Tesseract OCR instalado e disponível no `PATH`.
-*   Chave própria da API Gemini para habilitar a abordagem multimodal. As imagens serão enviadas à API Gemini do Google; não configure a chave se isso não for permitido para o seu dataset.
+*   Binário do Tesseract OCR e dados de idioma `eng` instalados e disponíveis no `PATH` (opcional para executar somente EasyOCR).
+*   Para usar Gemini no benchmark ou no cadastro: variável `GEMINI_API_KEY` preenchida com uma chave válida da API e autorização explícita para enviar as imagens ao serviço do Google. Sem chave, o Gemini não funciona; no benchmark, também é necessário `--enable-gemini` para permitir o envio do lote.
 *   (Opcional) Suporte a GPU CUDA para acelerar o EasyOCR.
 
 #### Instalação do Tesseract
@@ -67,14 +67,15 @@ No Ubuntu/Debian:
 sudo apt update
 sudo apt install -y tesseract-ocr
 tesseract --version
+tesseract --list-langs
 ```
 
-No Windows, instale o Tesseract OCR para Windows e adicione a pasta de instalação ao `PATH`; depois, confirme com `tesseract --version` em um novo terminal.
+No Windows, instale o Tesseract OCR com os dados de idioma inglês e adicione a pasta de instalação ao `PATH`; depois, confirme com `tesseract --version` e `tesseract --list-langs` em um novo terminal.
 
 ### 1. Clonando o Repositório
 ```bash
-git clone https://github.com/SeuUsuario/forzy-digital-twin.git
-cd forzy-digital-twin
+git clone https://github.com/DMGravina/Visao-Comp-CS4.git
+cd Visao-Comp-CS4
 ```
 
 ### 2. Configurando o Ambiente Virtual
@@ -94,8 +95,8 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-### 4. Configurando a chave Gemini
-Copie o modelo local e edite `.env` para inserir sua própria chave:
+### 4. Configurando a chave Gemini (opcional)
+EasyOCR e Tesseract não exigem chave de API. Para executar Gemini, é obrigatório configurar `GEMINI_API_KEY` com uma chave válida. O benchmark padrão não habilita Gemini e não envia imagens externamente. Só configure/ use a chave se o envio das imagens à API estiver autorizado. Copie o modelo local e edite `.env`:
 ```bash
 cp .env.example .env
 ```
@@ -103,23 +104,45 @@ No Windows PowerShell:
 ```powershell
 Copy-Item .env.example .env
 ```
-Abra `.env` e preencha `GEMINI_API_KEY=sua-chave`. O `.env` é ignorado pelo Git; nunca compartilhe nem versione esse arquivo ou a chave. O script carrega a chave localmente ao iniciar. Sem a chave, EasyOCR e Tesseract ainda podem ser avaliados, mas o comparativo identificará o Gemini como erro de execução.
+Abra `.env` e preencha `GEMINI_API_KEY=sua-chave`. O `.env` é ignorado pelo Git; nunca compartilhe nem versione esse arquivo ou a chave. No benchmark, a chave sozinha não habilita o envio: use `--enable-gemini` apenas depois de confirmar a autorização para usar o dataset nesse serviço. Se o Gemini não for habilitado ou não houver chave, os resultados indicam `NAO_EXECUTADO`, sem contar isso como falha de OCR.
 
 ### 5. Executando o Pipeline
-**Para comparar as três abordagens no lote rotulado:**
+**Para executar o benchmark local do lote rotulado (Gemini é opcional):**
 ```bash
-python modelo_visaoc.py
+python modelo_visaoc.py --output-dir evidencias_ocr
 ```
-O pipeline processa as imagens listadas em `placas/Book.csv` e gera `evidencias_ocr/comparativo_acuracia.csv`, `evidencias_ocr/resultados_detalhados.csv` e uma imagem com bounding boxes por abordagem e amostra em `evidencias_ocr/marcacoes/`. A acurácia é de correspondência exata da TAG normalizada (ignorando pontuação e caixa), e erros de execução são identificados no comparativo. Esta execução de benchmark gera apenas evidências e não grava dados no banco relacional.
+O comando processa as 30 imagens listadas em `placas/Book.csv` e gera `evidencias_ocr/comparativo_acuracia.csv`, `evidencias_ocr/resultados_detalhados.csv` e imagens com bounding boxes em `evidencias_ocr/marcacoes/` para os métodos executados. O CSV detalhado tem uma linha por imagem e método; `status` distingue `EXECUTADO`, `ERRO_EXECUCAO` e `NAO_EXECUTADO`, enquanto `classificacao_resultado` distingue falha de execução de `ERRO_OCR` (TAG executada mas sem correspondência exata). Esta execução gera apenas evidências e não grava dados no banco relacional.
 
-O relatório de benchmark também inclui distância de edição e similaridade percentual. Esses indicadores são informativos: somente a correspondência exata conta como acerto. Para executar em lotes menores (por exemplo, para limitar o uso de memória), use `--batch-offset` e `--batch-size` e escolha um `--output-dir` diferente para cada lote. Também é possível passar `--images-dir`, `--ground-truth`, `--output-dir` e `--expected-images`. O dataset atual contém 30 imagens rotuladas no CSV.
+Para a TAG normalizada, o benchmark ignora caixa e acentos e compara apenas letras ASCII e dígitos, removendo pontuação e espaços. `acuracia_percentual` conta acertos exatos sobre todas as imagens do lote (uma falha ou método não executado não conta como acerto); `acuracia_sobre_processadas_percentual` e `similaridade_media_percentual` usam somente as execuções concluídas. Distância de edição e similaridade percentual são informativas e nunca contam como acerto. Para executar em lotes menores (por exemplo, para limitar o uso de memória), use `--batch-offset` e `--batch-size` e escolha um `--output-dir` diferente para cada lote. Também é possível passar `--images-dir`, `--ground-truth`, `--output-dir` e `--expected-images`.
+
+#### Resultado medido neste repositório
+
+Execução local do benchmark em 2026-11-13, com o gabarito atual (30 imagens), EasyOCR e Tesseract habilitados e Gemini desabilitado:
+
+| Método | Processadas | Acertos exatos de TAG | Erros de execução | Não executadas | Similaridade média |
+|---|---:|---:|---:|---:|---:|
+| EasyOCR | 30/30 | 0/30 (0%) | 0 | 0 | 11,92% |
+| Tesseract | 30/30 | 0/30 (0%) | 0 | 0 | 3,22% |
+| Gemini API | 0/30 | Não avaliado | 0 | 30 | Não avaliada |
+
+As 30 imagens do `Book.csv` existem e foram processadas pelos dois motores locais. Em ambos, todas as saídas foram classificadas como `ERRO_OCR` (TAG extraída diferente da TAG normalizada do gabarito); não houve falhas de execução. Gemini foi deliberadamente `NAO_EXECUTADO` para não enviar imagens sem autorização explícita. Portanto, estes resultados não demonstram ganho de acurácia. Os CSVs detalhados contêm 90 linhas (uma por imagem e método) e foram gerados junto com 60 marcações dos motores locais em `evidencias_ocr/`; esse diretório é ignorado pelo Git.
+
+**Gemini, somente com autorização para esse dataset:**
+```bash
+python modelo_visaoc.py --enable-gemini
+```
+Esse comando requer `GEMINI_API_KEY` e conectividade com a API. Uma chave configurada sem a opção `--enable-gemini` não causa transmissão. Uma chamada recusada, erro de conexão ou resposta inválida aparecerá como `ERRO_EXECUCAO`, separado de um resultado OCR incorreto.
 
 **Para enviar imagens ao fluxo de cadastro e revisão humana:**
 ```bash
 python modelo_visaoc.py --mode ingest --images placas/Placa_Ind10.jpg --ocr-method "EasyOCR"
 ```
 
-O modo `ingest` aceita uma ou mais imagens e os motores `EasyOCR`, `Tesseract` ou `Gemini API`. As imagens são encaminhadas à fila SQLite como pendentes; não há gravação automática de ativos. Para revisar os dados apresentados e aprovar ou rejeitar cada registro:
+O modo `ingest` aceita uma ou mais imagens e os motores `EasyOCR`, `Tesseract` ou `Gemini API`. Para selecionar Gemini, configure `GEMINI_API_KEY` e execute, por exemplo:
+```bash
+python modelo_visaoc.py --mode ingest --images placas/Placa_Ind10.jpg --ocr-method "Gemini API"
+```
+Esse comando envia a imagem à API Gemini; use-o somente com chave válida e autorização para esse uso. As imagens são encaminhadas à fila SQLite como pendentes; não há gravação automática de ativos. Para revisar os dados apresentados e aprovar ou rejeitar cada registro:
 ```bash
 python modelo_visaoc.py --mode review
 ```

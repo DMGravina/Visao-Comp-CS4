@@ -1,11 +1,11 @@
 import argparse
+import json
 import os
 import re
 import unicodedata
 from pathlib import Path
 
 import cv2
-import easyocr
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
@@ -26,6 +26,16 @@ from Text_function.tratar import detectar_texto, tratar_imagens
 
 ABORDAGENS = ("EasyOCR", "Tesseract", "Gemini API")
 QUANTIDADE_ESPERADA = 30
+
+
+def _criar_leitor_easyocr():
+    try:
+        import easyocr
+    except ImportError as erro:
+        raise RuntimeError(
+            "Instale a dependência Python 'easyocr' para usar esta abordagem."
+        ) from erro
+    return easyocr.Reader(["pt", "en"], gpu=False)
 
 
 def normalizar_serie(valor):
@@ -141,6 +151,7 @@ def executar_lote(
     quantidade_esperada,
     deslocamento_lote=0,
     tamanho_lote=None,
+    habilitar_gemini=False,
 ):
     load_dotenv()
     df_gabarito = carregar_gabarito(arquivo_gabarito)
@@ -198,7 +209,13 @@ def executar_lote(
     pasta_marcacoes = pasta_saida / "marcacoes"
     pasta_marcacoes.mkdir(parents=True, exist_ok=True)
     dict_tags = criar_ddt()
-    leitor_easyocr = easyocr.Reader(["pt", "en"], gpu=False)
+    try:
+        leitor_easyocr = _criar_leitor_easyocr()
+        erro_easyocr = None
+    except Exception as erro:
+        leitor_easyocr = None
+        erro_easyocr = f"EasyOCR indisponível: {erro}"
+
     try:
         import pytesseract
     except ImportError as erro:
@@ -216,6 +233,18 @@ def executar_lote(
                 f"Detalhe: {erro}"
             )
 
+    if not habilitar_gemini:
+        erro_gemini = (
+            "Execução desabilitada; use --enable-gemini somente após confirmar "
+            "a autorização para enviar este dataset à API."
+        )
+    elif not os.environ.get("GEMINI_API_KEY"):
+        erro_gemini = (
+            "GEMINI_API_KEY não configurada; nenhuma imagem foi enviada."
+        )
+    else:
+        erro_gemini = None
+
     registros_avaliacao = []
 
     for caminho, (_, linha_gabarito) in zip(arquivos, df_lote.iterrows()):
@@ -224,50 +253,68 @@ def executar_lote(
         try:
             imagem_processada, imagem_original = tratar_imagens(str(caminho))
             altura, largura = imagem_original.shape[:2]
-
-            def executar_tesseract_local():
-                if erro_tesseract:
-                    raise RuntimeError(erro_tesseract)
-                return executar_tesseract(imagem_processada, largura, altura)
-
-            resultados_metodos = {
-                "EasyOCR": lambda: detectar_texto(
-                    str(caminho), leitor_easyocr, imagem_processada
-                ),
-                "Tesseract": executar_tesseract_local,
-                "Gemini API": lambda: executar_gemini(imagem_original, cv2),
-            }
         except Exception as erro:
-            resultados_metodos = {
-                abordagem: (None, None, f"Falha no pré-processamento: {erro}")
-                for abordagem in ABORDAGENS
-            }
+            imagem_processada = None
+            imagem_original = None
+            erro_preprocessamento = f"Falha no pré-processamento: {erro}"
+        else:
+            erro_preprocessamento = None
+
+        metodos = {
+            "EasyOCR": (
+                lambda: detectar_texto(
+                    str(caminho), leitor_easyocr, imagem_processada
+                )
+            ),
+            "Tesseract": (
+                lambda: executar_tesseract(
+                    imagem_processada, largura, altura
+                )
+            ),
+            "Gemini API": lambda: executar_gemini(imagem_original, cv2),
+        }
+        erros_configuracao = {
+            "EasyOCR": erro_easyocr,
+            "Tesseract": erro_tesseract,
+            "Gemini API": erro_gemini,
+        }
 
         for abordagem in ABORDAGENS:
-            resultado = resultados_metodos[abordagem]
-            if isinstance(resultado, tuple) and len(resultado) == 3:
-                texto, deteccoes, erro = resultado
+            texto = ""
+            deteccoes = []
+            erro = ""
+            status = "EXECUTADO"
+
+            if abordagem == "Gemini API" and erro_gemini:
+                status = "NAO_EXECUTADO"
+                erro = erro_gemini
+            elif erro_preprocessamento:
+                status = "ERRO_EXECUCAO"
+                erro = erro_preprocessamento
+            elif erros_configuracao[abordagem]:
+                status = "ERRO_EXECUCAO"
+                erro = erros_configuracao[abordagem]
             else:
                 try:
-                    texto, deteccoes = resultado()
-                    erro = ""
+                    texto, deteccoes = metodos[abordagem]()
                 except Exception as excecao:
-                    texto, deteccoes, erro = "", [], str(excecao)
+                    status = "ERRO_EXECUCAO"
+                    erro = str(excecao)
 
-            if erro:
-                texto, deteccoes = "", []
-                print(f"Erro em {abordagem} para {caminho.name}: {erro}")
-
-            serie = extrair(texto or "", dict_tags, {}, deteccoes)["tag_identificacao"]
+            serie = extrair(
+                texto or "", dict_tags, {}, deteccoes
+            )["tag_identificacao"] if status == "EXECUTADO" else "Não localizado"
             serie_real = linha_gabarito["numero_serie_real"]
             serie_normalizada = normalizar_serie(serie)
             serie_real_normalizada = normalizar_serie(serie_real)
             acertou = (
-                serie_normalizada not in ("", "NAOLOCALIZADO")
+                status == "EXECUTADO"
+                and serie_normalizada not in ("", "NAOLOCALIZADO")
                 and serie_real_normalizada not in ("", "NAOLOCALIZADO")
-            ) and (
-                serie_normalizada == serie_real_normalizada
+                and serie_normalizada == serie_real_normalizada
             )
+            if status == "ERRO_EXECUCAO":
+                print(f"Erro em {abordagem} para {caminho.name}: {erro}")
             similaridade = calcular_similaridade(serie, serie_real)
             distancia = None
             if (
@@ -283,13 +330,22 @@ def executar_lote(
                 "numero_serie_extraido": serie,
                 "numero_serie_real": serie_real,
                 "acertou": acertou,
+                "classificacao_resultado": (
+                    "ERRO_EXECUCAO"
+                    if status == "ERRO_EXECUCAO"
+                    else "NAO_EXECUTADO"
+                    if status == "NAO_EXECUTADO"
+                    else "ACERTO_EXATO"
+                    if acertou
+                    else "ERRO_OCR"
+                ),
                 "distancia_edicao": distancia,
                 "similaridade_percentual": similaridade,
-                "status": "ERRO" if erro else "EXECUTADO",
+                "status": status,
                 "erro": erro,
             })
 
-            if imagem_original is not None:
+            if status == "EXECUTADO":
                 nome_abordagem = re.sub(r"[^A-Za-z0-9]+", "_", abordagem).strip("_")
                 salvar_evidencia(
                     pasta_marcacoes / f"{nome_abordagem}_{caminho.stem}.jpg",
@@ -300,45 +356,43 @@ def executar_lote(
                 )
 
     df_avaliacao = pd.DataFrame(registros_avaliacao)
-    df_resumo = pd.DataFrame([
-        {
+    resumos = []
+    for abordagem in ABORDAGENS:
+        avaliacao_abordagem = df_avaliacao[
+            df_avaliacao["abordagem"] == abordagem
+        ]
+        executadas = avaliacao_abordagem[
+            avaliacao_abordagem["status"] == "EXECUTADO"
+        ]
+        acertos = int(avaliacao_abordagem["acertou"].sum())
+        resumos.append({
             "abordagem": abordagem,
             "imagens_no_gabarito": len(df_gabarito),
-            "imagens_processadas": len(df_lote),
+            "imagens_no_lote": len(df_lote),
+            "imagens_processadas": len(executadas),
             "imagens_esperadas": quantidade_esperada,
             "dataset_completo": len(df_gabarito) >= quantidade_esperada,
             "inicio_lote": deslocamento_lote,
-            "acertos": int(
-                df_avaliacao.loc[
-                    df_avaliacao["abordagem"] == abordagem, "acertou"
-                ].sum()
+            "acertos_exatos": acertos,
+            "similaridade_media_percentual": (
+                round(executadas["similaridade_percentual"].mean(), 2)
+                if not executadas.empty
+                else None
             ),
-            "similaridade_media_percentual": round(
-                df_avaliacao.loc[
-                    df_avaliacao["abordagem"] == abordagem,
-                    "similaridade_percentual",
-                ].mean(),
-                2,
-            ),
-            "acuracia_percentual": round(
-                100
-                * df_avaliacao.loc[
-                    df_avaliacao["abordagem"] == abordagem, "acertou"
-                ].sum()
-                / len(df_lote),
-                2,
+            "acuracia_percentual": round(100 * acertos / len(df_lote), 2),
+            "acuracia_sobre_processadas_percentual": (
+                round(100 * acertos / len(executadas), 2)
+                if not executadas.empty
+                else None
             ),
             "erros_execucao": int(
-                (
-                    df_avaliacao.loc[
-                        df_avaliacao["abordagem"] == abordagem, "status"
-                    ]
-                    == "ERRO"
-                ).sum()
+                (avaliacao_abordagem["status"] == "ERRO_EXECUCAO").sum()
             ),
-        }
-        for abordagem in ABORDAGENS
-    ])
+            "nao_executadas": int(
+                (avaliacao_abordagem["status"] == "NAO_EXECUTADO").sum()
+            ),
+        })
+    df_resumo = pd.DataFrame(resumos)
 
     df_avaliacao.to_csv(
         pasta_saida / "resultados_detalhados.csv",
@@ -356,7 +410,7 @@ def executar_lote(
 
 def _preparar_ocr(abordagem):
     if abordagem == "EasyOCR":
-        return easyocr.Reader(["pt", "en"], gpu=False)
+        return _criar_leitor_easyocr()
     if abordagem == "Tesseract":
         try:
             import pytesseract
@@ -494,6 +548,12 @@ def main():
         help="Quantidade de imagens no lote (modo benchmark).",
     )
     parser.add_argument(
+        "--enable-gemini",
+        action="store_true",
+        help="Autoriza explicitamente o envio do dataset à API Gemini "
+        "(exige GEMINI_API_KEY).",
+    )
+    parser.add_argument(
         "--images",
         nargs="+",
         help="Caminhos das imagens (obrigatório no modo ingest).",
@@ -514,6 +574,7 @@ def main():
             argumentos.expected_images,
             argumentos.batch_offset,
             argumentos.batch_size,
+            argumentos.enable_gemini,
         )
     elif argumentos.mode == "ingest":
         if not argumentos.images:
